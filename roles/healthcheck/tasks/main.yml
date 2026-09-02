@@ -1,0 +1,5 @@
+---
+- name: HTTP health check
+  ansible.builtin.uri:
+    url: http://127.0.0.1/health
+    status_code: 200

@@ -1,0 +1,12 @@
+baseline_packages:
+  - curl
+  - vim-enhanced
+  - jq
+  - chrony
+  - rsyslog
+  - dnf-plugins-core
+
+web_package: httpd
+web_service: httpd
+time_service: chronyd
+ssh_service: sshd

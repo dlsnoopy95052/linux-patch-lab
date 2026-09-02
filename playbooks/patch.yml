@@ -1,0 +1,90 @@
+---
+- name: Rolling Linux patching
+  hosts: all
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+
+  pre_tasks:
+    - name: Verify service health before patch
+      ansible.builtin.uri:
+        url: http://127.0.0.1/health
+        status_code: 200
+
+  tasks:
+    - name: Ubuntu - update cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Ubuntu - install available updates
+      ansible.builtin.apt:
+        upgrade: dist
+      when: ansible_os_family == "Debian"
+
+    - name: Rocky - install available updates
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+      when: ansible_os_family == "RedHat"
+
+    - name: Ubuntu - check reboot-required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: ubuntu_reboot
+      when: ansible_os_family == "Debian"
+
+    - name: Rocky - check whether reboot is required
+      ansible.builtin.command:
+        cmd: dnf needs-restarting -r
+      register: rocky_reboot
+      changed_when: false
+      failed_when: rocky_reboot.rc not in [0, 1]
+      when: ansible_os_family == "RedHat"
+
+    - name: Determine Ubuntu reboot requirement
+      ansible.builtin.set_fact:
+        reboot_needed: "{{ ubuntu_reboot.stat.exists }}"
+      when: ansible_os_family == "Debian"
+
+    - name: Determine Rocky reboot requirement
+      ansible.builtin.set_fact:
+        reboot_needed: "{{ rocky_reboot.rc == 1 }}"
+      when: ansible_os_family == "RedHat"
+
+    - name: Show reboot requirement
+      ansible.builtin.debug:
+        msg: "Reboot required: {{ reboot_needed }}"
+
+    - name: Reboot server when required
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+      when: reboot_needed | bool
+
+  post_tasks:
+    - name: Verify SSH service
+      ansible.builtin.command:
+        cmd: systemctl is-active {{ ssh_service }}
+      changed_when: false
+
+    - name: Verify web service
+      ansible.builtin.command:
+        cmd: systemctl is-active {{ web_service }}
+      changed_when: false
+
+    - name: Verify HTTP health after patch
+      ansible.builtin.uri:
+        url: http://127.0.0.1/health
+        status_code: 200
+
+    - name: Show running kernel
+      ansible.builtin.command:
+        cmd: uname -r
+      register: running_kernel
+      changed_when: false
+
+    - name: Display kernel
+      ansible.builtin.debug:
+        var: running_kernel.stdout

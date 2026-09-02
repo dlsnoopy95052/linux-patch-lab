@@ -1,0 +1,37 @@
+---
+- name: Audit pending updates
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Ubuntu - update package cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Ubuntu - list upgradable packages
+      ansible.builtin.shell: |
+        apt list --upgradable 2>/dev/null | tail -n +2
+      register: ubuntu_updates
+      changed_when: false
+      when: ansible_os_family == "Debian"
+
+    - name: Rocky - check updates
+      ansible.builtin.command:
+        cmd: dnf check-update -q
+      register: rocky_updates
+      changed_when: false
+      failed_when: rocky_updates.rc not in [0, 100]
+      when: ansible_os_family == "RedHat"
+
+    - name: Show Ubuntu updates
+      ansible.builtin.debug:
+        var: ubuntu_updates.stdout_lines
+      when: ansible_os_family == "Debian"
+
+    - name: Show Rocky updates
+      ansible.builtin.debug:
+        var: rocky_updates.stdout_lines
+      when: ansible_os_family == "RedHat"

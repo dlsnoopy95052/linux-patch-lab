@@ -1,0 +1,12 @@
+baseline_packages:
+  - curl
+  - vim
+  - jq
+  - chrony
+  - rsyslog
+  - needrestart
+
+web_package: nginx
+web_service: nginx
+time_service: chrony
+ssh_service: ssh

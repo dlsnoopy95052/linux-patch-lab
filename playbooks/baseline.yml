@@ -1,0 +1,34 @@
+---
+- name: Configure Linux fleet baseline
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Install baseline packages
+      ansible.builtin.package:
+        name: "{{ baseline_packages }}"
+        state: present
+
+    - name: Install web package
+      ansible.builtin.package:
+        name: "{{ web_package }}"
+        state: present
+
+    - name: Start time service
+      ansible.builtin.service:
+        name: "{{ time_service }}"
+        state: started
+        enabled: true
+
+    - name: Start web service
+      ansible.builtin.service:
+        name: "{{ web_service }}"
+        state: started
+        enabled: true
+
+    - name: Create health check page
+      ansible.builtin.copy:
+        content: "OK - {{ inventory_hostname }}\n"
+        dest: /var/www/html/health
+        mode: "0644"

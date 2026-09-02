@@ -1,0 +1,26 @@
+---
+- name: Demonstrate package version policy
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Ubuntu - hold nginx
+      ansible.builtin.command:
+        cmd: apt-mark hold nginx
+      register: apt_hold
+      changed_when: "'was already set on hold' not in apt_hold.stdout"
+      when: ansible_os_family == "Debian"
+
+    - name: Rocky - ensure versionlock plugin exists
+      ansible.builtin.package:
+        name: python3-dnf-plugin-versionlock
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Rocky - versionlock httpd
+      ansible.builtin.command:
+        cmd: dnf versionlock add httpd
+      register: dnf_lock
+      changed_when: "'Adding versionlock on' in dnf_lock.stdout"
+      when: ansible_os_family == "RedHat"

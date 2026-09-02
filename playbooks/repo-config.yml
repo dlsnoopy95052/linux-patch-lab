@@ -1,0 +1,33 @@
+---
+- name: Configure internal repositories
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Ubuntu - install internal repository key
+      ansible.builtin.get_url:
+        url: http://192.168.56.20/apt/sre-lab-keyring.gpg
+        dest: /usr/share/keyrings/sre-lab-keyring.gpg
+        mode: "0644"
+      when: ansible_os_family == "Debian"
+
+    - name: Ubuntu - configure internal APT repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/sre-lab.list
+        mode: "0644"
+        content: |
+          deb [signed-by=/usr/share/keyrings/sre-lab-keyring.gpg] http://192.168.56.20/apt noble-lab main
+      when: ansible_os_family == "Debian"
+
+    - name: Rocky - configure internal RPM repository
+      ansible.builtin.copy:
+        dest: /etc/yum.repos.d/company-approved.repo
+        mode: "0644"
+        content: |
+          [company-approved]
+          name=Company Approved Packages
+          baseurl=http://192.168.56.20/rpm/rocky9/approved
+          enabled=1
+          gpgcheck=0
+      when: ansible_os_family == "RedHat"

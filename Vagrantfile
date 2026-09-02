@@ -1,24 +1,18 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
-#
+
 # Linux Fleet Package & Patch Management Lab
 # VirtualBox + Vagrant
 #
-# Topology:
-#   sre-control01      192.168.56.10  Ubuntu 24.04  Ansible + Git + repo tools
-#   ubu-canary01       192.168.56.31  Ubuntu 24.04  Canary
-#   ubu-prod01         192.168.56.32  Ubuntu 24.04  Production
-#   rocky-canary01     192.168.56.41  Rocky 9       Canary
-#   rocky-prod01       192.168.56.42  Rocky 9       Production
-#
-# Recommended first run:
+# Recommended first build:
 #   vagrant up sre-control01
-#   vagrant up
+#   vagrant up ubu-canary01 ubu-prod01 rocky-canary01 rocky-prod01
 #
-# Once everything is up:
+# Then:
 #   vagrant ssh sre-control01
 #   source ~/venvs/ansible/bin/activate
 #   cd /vagrant
+#   ansible-inventory --graph
 #   ansible all -m ping
 
 LAB_NODES = {
@@ -59,32 +53,14 @@ LAB_NODES = {
   }
 }.freeze
 
-HOSTS_BLOCK = <<~HOSTS
-  # SRE-LAB-BEGIN
-  192.168.56.10 sre-control01
-  192.168.56.31 ubu-canary01
-  192.168.56.32 ubu-prod01
-  192.168.56.41 rocky-canary01
-  192.168.56.42 rocky-prod01
-  # SRE-LAB-END
-HOSTS
-
 Vagrant.configure("2") do |config|
   config.vm.boot_timeout = 600
   config.vm.box_check_update = true
-
-  # The default /vagrant shared folder is useful on the control node because
-  # it exposes this Git project to Ansible. Managed nodes disable it below so
-  # Rocky kernel patching cannot be disrupted by a VirtualBox shared-folder
-  # / Guest Additions mismatch after reboot.
 
   LAB_NODES.each do |name, node|
     config.vm.define name, primary: (name == "sre-control01") do |vm|
       vm.vm.box = node[:box]
       vm.vm.hostname = name
-
-      # Vagrant creates a VirtualBox host-only/private adapter for this network.
-      # NAT remains available as the first adapter for Internet access.
       vm.vm.network "private_network", ip: node[:ip]
 
       vm.vm.provider "virtualbox" do |vb|
@@ -94,25 +70,30 @@ Vagrant.configure("2") do |config|
         vb.gui = false
       end
 
-      # Put all lab names into /etc/hosts on every machine.
+      # Keep hostnames consistent on all lab nodes.
       vm.vm.provision "shell", privileged: true, inline: <<-SHELL
-        set -euo pipefail
-
+        set -e
         sed -i '/# SRE-LAB-BEGIN/,/# SRE-LAB-END/d' /etc/hosts
-        cat >> /etc/hosts <<'EOF_HOSTS'
-#{HOSTS_BLOCK.rstrip}
-EOF_HOSTS
+        printf '%s\n' \
+          '# SRE-LAB-BEGIN' \
+          '192.168.56.10 sre-control01' \
+          '192.168.56.31 ubu-canary01' \
+          '192.168.56.32 ubu-prod01' \
+          '192.168.56.41 rocky-canary01' \
+          '192.168.56.42 rocky-prod01' \
+          '# SRE-LAB-END' >> /etc/hosts
       SHELL
 
       if node[:role] == :control
-        # Keep the Git project mounted on the control node.
+        # Only the control node needs the Git repo shared as /vagrant.
         vm.vm.synced_folder ".", "/vagrant"
 
         vm.vm.provision "shell", privileged: true, inline: <<-'SHELL'
           set -euo pipefail
 
-          echo "[control] Installing Ansible, Git, repo tools, and utilities..."
+          echo "[control] Installing Ansible, Git, Nginx, and repository tools..."
           export DEBIAN_FRONTEND=noninteractive
+
           apt-get update
           apt-get install -y \
             python3 \
@@ -126,16 +107,18 @@ EOF_HOSTS
             aptly \
             createrepo-c
 
-          # Ansible virtual environment for the vagrant user.
+          # Ansible virtual environment.
           install -d -m 0755 -o vagrant -g vagrant /home/vagrant/venvs
+
           if [ ! -x /home/vagrant/venvs/ansible/bin/ansible ]; then
             sudo -u vagrant python3 -m venv /home/vagrant/venvs/ansible
             sudo -u vagrant /home/vagrant/venvs/ansible/bin/pip install --upgrade pip
             sudo -u vagrant /home/vagrant/venvs/ansible/bin/pip install ansible
           fi
 
-          # Generate the SSH key Ansible will use to manage the fleet.
+          # Management SSH key used by Ansible.
           install -d -m 0700 -o vagrant -g vagrant /home/vagrant/.ssh
+
           if [ ! -f /home/vagrant/.ssh/id_ed25519 ]; then
             sudo -u vagrant ssh-keygen \
               -t ed25519 \
@@ -144,39 +127,48 @@ EOF_HOSTS
               -f /home/vagrant/.ssh/id_ed25519
           fi
 
-          # Publish only the public key over the lab network. Managed nodes
-          # fetch this file during provisioning, so they do not need /vagrant.
+          # Publish ONLY the public key for managed-node provisioning.
           cp /home/vagrant/.ssh/id_ed25519.pub /var/www/html/sre-control01.pub
           chmod 0644 /var/www/html/sre-control01.pub
 
-          # Keep a copy in the Git worktree for visibility; it is public-key
-          # material only and is safe to recreate.
           install -d -m 0755 /vagrant/generated
           cp /home/vagrant/.ssh/id_ed25519.pub /vagrant/generated/sre-control01.pub
           chmod 0644 /vagrant/generated/sre-control01.pub
 
-          # Prepare directories for the later internal APT/RPM repository labs.
+          # Repository lab directories.
           install -d -m 0755 /var/www/html/apt
           install -d -m 0755 /var/www/html/rpm/rocky9/approved
           systemctl enable --now nginx
 
-          cat > /home/vagrant/LAB-START-HERE.txt <<'EOF'
-          Linux Patch Lab control node is ready.
+          # /vagrant is a VirtualBox shared folder and is world-writable.
+          # Ansible will otherwise ignore /vagrant/ansible.cfg.
+          # Explicit ANSIBLE_CONFIG makes the project config usable.
+          if ! grep -q 'ANSIBLE_CONFIG=/vagrant/ansible.cfg' /home/vagrant/.bashrc; then
+            printf '%s\n' 'export ANSIBLE_CONFIG=/vagrant/ansible.cfg' >> /home/vagrant/.bashrc
+          fi
 
-          Run:
-            source ~/venvs/ansible/bin/activate
-            cd /vagrant
-            ansible-inventory --graph
-            ansible all -m ping
-            ansible-playbook playbooks/baseline.yml
-          EOF
+          # Also create a normal home-directory Ansible config fallback.
+          ln -sfn /vagrant/ansible.cfg /home/vagrant/.ansible.cfg
+          chown -h vagrant:vagrant /home/vagrant/.ansible.cfg
+
+          printf '%s\n' \
+            'Linux Patch Lab control node is ready.' \
+            '' \
+            'Run:' \
+            '  source ~/venvs/ansible/bin/activate' \
+            '  export ANSIBLE_CONFIG=/vagrant/ansible.cfg' \
+            '  cd /vagrant' \
+            '  ansible-inventory --graph' \
+            '  ansible all -m ping' \
+            '  ansible-playbook playbooks/baseline.yml' \
+            > /home/vagrant/LAB-START-HERE.txt
+
           chown vagrant:vagrant /home/vagrant/LAB-START-HERE.txt
 
           echo "[control] Provisioning complete."
         SHELL
       else
-        # Managed nodes do not need the host project folder. This also avoids
-        # VirtualBox Guest Additions/shared-folder coupling after kernel patches.
+        # Managed nodes do not need /vagrant.
         vm.vm.synced_folder ".", "/vagrant", disabled: true
 
         vm.vm.provision "shell", privileged: true, inline: <<-'SHELL'
@@ -184,7 +176,7 @@ EOF_HOSTS
 
           echo "[managed] Preparing node for Ansible management..."
 
-          # Ensure Python exists for Ansible modules.
+          # Python is needed by Ansible modules.
           if command -v apt-get >/dev/null 2>&1; then
             export DEBIAN_FRONTEND=noninteractive
             apt-get update
@@ -196,7 +188,7 @@ EOF_HOSTS
             exit 1
           fi
 
-          # Create an enterprise-style management account for the lab.
+          # Create sysadmin management account.
           if ! id sysadmin >/dev/null 2>&1; then
             useradd -m -s /bin/bash sysadmin
           fi
@@ -207,31 +199,39 @@ EOF_HOSTS
             usermod -aG wheel sysadmin
           fi
 
-          cat > /etc/sudoers.d/90-sysadmin <<'EOF_SUDO'
-          sysadmin ALL=(ALL) NOPASSWD: ALL
-          EOF_SUDO
+          # IMPORTANT: use printf instead of a nested heredoc.
+          # This avoids accidentally writing the rest of the provisioning
+          # script into the sudoers file.
+          printf '%s\n' 'sysadmin ALL=(ALL) NOPASSWD: ALL' \
+            > /etc/sudoers.d/90-sysadmin
           chmod 0440 /etc/sudoers.d/90-sysadmin
+          visudo -cf /etc/sudoers.d/90-sysadmin
 
-          # Wait for sre-control01 to publish its public key over Nginx. This
-          # is why the safest first run is: vagrant up sre-control01 && vagrant up
+          # Retrieve the control-node public key.
           rm -f /tmp/sre-control01.pub
-          for _ in $(seq 1 60); do
-            if curl -fsS http://192.168.56.10/sre-control01.pub               -o /tmp/sre-control01.pub && [ -s /tmp/sre-control01.pub ]; then
+
+          for attempt in $(seq 1 60); do
+            if curl -fsS \
+              http://192.168.56.10/sre-control01.pub \
+              -o /tmp/sre-control01.pub &&
+              [ -s /tmp/sre-control01.pub ]; then
               break
             fi
+
+            echo "[managed] Waiting for control-node SSH public key (${attempt}/60)..."
             sleep 2
           done
 
           if [ ! -s /tmp/sre-control01.pub ]; then
             echo "ERROR: could not retrieve the control-node public key." >&2
-            echo "Run: vagrant up sre-control01, then reprovision this VM." >&2
+            echo "Build sre-control01 first, then reprovision this VM." >&2
             exit 1
           fi
 
           install -d -m 0700 -o sysadmin -g sysadmin /home/sysadmin/.ssh
-          cat /tmp/sre-control01.pub > /home/sysadmin/.ssh/authorized_keys
-          chown sysadmin:sysadmin /home/sysadmin/.ssh/authorized_keys
-          chmod 0600 /home/sysadmin/.ssh/authorized_keys
+          install -m 0600 -o sysadmin -g sysadmin \
+            /tmp/sre-control01.pub \
+            /home/sysadmin/.ssh/authorized_keys
 
           echo "[managed] Provisioning complete."
         SHELL
